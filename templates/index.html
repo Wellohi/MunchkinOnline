@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Mesa do Jogo</title>
+    <script src="https://unpkg.com/konva@9.3.1/konva.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #2c3e50;
+        }
+
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #zoomCard {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            z-index: 1000;
+            height: 85vh;
+            border-radius: 15px;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="container"></div>
+
+    <img id="zoomCard" src="" alt="Zoom da Carta">
+
+    <script>
+        const larguraTela = window.innerWidth;
+        const alturaTela = window.innerHeight;
+
+        const gradeX = 110;
+        const gradeY = 160;
+        const linhaDaMao = alturaTela - 250;
+
+        const palco = new Konva.Stage({
+            container: 'container',
+            width: larguraTela,
+            height: alturaTela,
+        });
+
+        palco.on('contextmenu', function (e) {
+            e.evt.preventDefault();
+        });
+
+        const camada = new Konva.Layer();
+        palco.add(camada);
+
+        function desenharGrade() {
+            for (let i = 0; i < larguraTela / gradeX; i++) {
+                camada.add(new Konva.Line({
+                    points: [Math.round(i * gradeX), 0, Math.round(i * gradeX), linhaDaMao],
+                    stroke: 'rgba(255, 255, 255, 0.15)',
+                    strokeWidth: 1,
+                }));
+            }
+            for (let j = 0; j < linhaDaMao / gradeY; j++) {
+                camada.add(new Konva.Line({
+                    points: [0, Math.round(j * gradeY), larguraTela, Math.round(j * gradeY)],
+                    stroke: 'rgba(255, 255, 255, 0.15)',
+                    strokeWidth: 1,
+                }));
+            }
+        }
+        desenharGrade();
+
+        // Linha visual da mesa para a mão
+        const areaMao = new Konva.Rect({
+            x: 0,
+            y: linhaDaMao,
+            width: larguraTela,
+            height: 250,
+            fill: '#34495e',
+            opacity: 0.8,
+            name: 'zonaMao'
+        });
+        camada.add(areaMao);
+
+        let pilhaEmMovimento = [];
+        let cartaEmFoco = null;
+
+        // ==========================================
+        // CONEXÃO WEBSOCKET E RECEBIMENTO DE DADOS
+        // ==========================================
+        const socket = io();
+
+        socket.on('connect', () => {
+            console.log('Conectado ao servidor multiplayer com sucesso!');
+        });
+
+        socket.on('atualizar_posicao', (dados) => {
+            const cartasNaMesa = camada.find('.carta');
+            const cartaMovida = cartasNaMesa.find(c => c.id() === dados.id);
+
+            if (cartaMovida) {
+                cartaMovida.show(); // --- NOVO: Garante que a carta fique visível (caso estivesse escondida na mão de alguém) ---
+                cartaMovida.to({ x: dados.x, y: dados.y, duration: 0.1 });
+                cartaMovida.moveToTop();
+            }
+        });
+
+        socket.on('atualizar_rotacao', (dados) => {
+            const cartasNaMesa = camada.find('.carta');
+            const cartaRotacionada = cartasNaMesa.find(c => c.id() === dados.id);
+            if (cartaRotacionada) cartaRotacionada.to({ rotation: dados.rotacao, duration: 0.15 });
+        });
+
+        socket.on('atualizar_frente_verso', (dados) => {
+            const cartasNaMesa = camada.find('.carta');
+            const cartaVirada = cartasNaMesa.find(c => c.id() === dados.id);
+            if (cartaVirada) {
+                cartaVirada.setAttr('mostrandoFrente', dados.mostrandoFrente);
+                cartaVirada.image(dados.mostrandoFrente ? cartaVirada.getAttr('imgFrente') : cartaVirada.getAttr('imgVerso'));
+            }
+        });
+
+        socket.on('atualizar_ordem_pilha', (dados) => {
+            const cartasNaMesa = camada.find('.carta');
+            dados.ids.forEach(id => {
+                const carta = cartasNaMesa.find(c => c.id() === id);
+                if (carta) {
+                    carta.moveToTop();
+                    carta.to({
+                        rotation: (Math.random() - 0.5) * 10,
+                        duration: 0.1,
+                        onFinish: () => carta.to({ rotation: 0, duration: 0.1 })
+                    });
+                }
+            });
+        });
+
+        // --- NOVO: Ouve quando uma carta vai para a mão de outro jogador ---
+        socket.on('esconder_carta', (dados) => {
+            const cartasNaMesa = camada.find('.carta');
+            const cartaParaEsconder = cartasNaMesa.find(c => c.id() === dados.id);
+            if (cartaParaEsconder) {
+                cartaParaEsconder.hide(); // O Konva faz a carta sumir totalmente da tela deste jogador
+            }
+        });
+
+        // ==========================================
+        // LÓGICA DAS CARTAS
+        // ==========================================
+        function embaralharArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        function criarCarta(xInicial, yInicial, urlFrente, urlVerso, idCarta) {
+            const larguraCarta = 100;
+            const alturaCarta = 150;
+
+            const imgFrente = new Image();
+            imgFrente.src = urlFrente;
+
+            const imgVerso = new Image();
+            imgVerso.src = urlVerso;
+
+            imgVerso.onload = () => {
+                const carta = new Konva.Image({
+                    x: xInicial + larguraCarta / 2,
+                    y: yInicial + alturaCarta / 2,
+                    image: imgVerso,
+                    width: larguraCarta,
+                    height: alturaCarta,
+                    cornerRadius: 8,
+                    draggable: true,
+                    id: idCarta,
+                    name: 'carta',
+                    shadowColor: 'black',
+                    shadowBlur: 10,
+                    shadowOpacity: 0.5,
+                    shadowOffset: { x: 5, y: 5 },
+                    offsetX: larguraCarta / 2,
+                    offsetY: alturaCarta / 2
+                });
+
+                carta.setAttr('imgFrente', imgFrente);
+                carta.setAttr('imgVerso', imgVerso);
+                carta.setAttr('mostrandoFrente', false);
+
+                carta.on('mouseenter', () => {
+                    cartaEmFoco = carta;
+                    document.body.style.cursor = 'pointer';
+                });
+
+                carta.on('mouseleave', () => {
+                    if (cartaEmFoco === carta) {
+                        cartaEmFoco = null;
+                    }
+                    document.body.style.cursor = 'default';
+                });
+
+                carta.on('contextmenu', (e) => {
+                    const novaRotacao = carta.rotation() === 0 ? -90 : 0;
+                    carta.to({ rotation: novaRotacao, duration: 0.15 });
+                    socket.emit('rotacionar_carta', { id: carta.id(), rotacao: novaRotacao });
+                });
+
+                carta.on('dragstart', (e) => {
+                    if (e.evt.shiftKey) {
+                        const cartasNaMesa = camada.find('.carta');
+                        const todasNaPilha = cartasNaMesa.filter(c =>
+                            c.x() === carta.x() &&
+                            c.y() === carta.y()
+                        );
+
+                        todasNaPilha.forEach(c => {
+                            c.moveToTop();
+                            c.shadowOffset({ x: 10, y: 10 });
+                        });
+
+                        pilhaEmMovimento = todasNaPilha.filter(c => c !== carta);
+                    } else {
+                        carta.moveToTop();
+                        carta.shadowOffset({ x: 10, y: 10 });
+                        pilhaEmMovimento = [];
+                    }
+                });
+
+                carta.on('dragmove', () => {
+                    pilhaEmMovimento.forEach(c => {
+                        c.x(carta.x());
+                        c.y(carta.y());
+                    });
+                });
+
+                // --- ATUALIZADO: Lógica de Soltar a Carta (Mesa vs Mão) ---
+                carta.on('dragend', () => {
+                    carta.shadowOffset({ x: 5, y: 5 });
+                    pilhaEmMovimento.forEach(c => c.shadowOffset({ x: 5, y: 5 }));
+
+                    // VERIFICA SE ENTROU NA MÃO (Y da carta maior que a linha da mão)
+                    if (carta.y() - carta.offsetY() >= linhaDaMao) {
+
+                        // 1. Avisa os outros jogadores para esconderem a carta
+                        socket.emit('carta_para_mao', { id: carta.id() });
+
+                        // 2. Se puxou a pilha toda com Shift, esconde as outras também
+                        pilhaEmMovimento.forEach(c => {
+                            socket.emit('carta_para_mao', { id: c.id() });
+                        });
+
+                        // Obs: Não aplicamos Snap-to-Grid aqui. Na mão, a carta fica livre onde você soltar!
+
+                    } else {
+                        // CARTA ESTÁ NA MESA (Aplica Snap-to-Grid e avisa a nova posição)
+                        const xAlinhado = Math.round((carta.x() - carta.offsetX()) / gradeX) * gradeX + 10 + carta.offsetX();
+                        const yAlinhado = Math.round((carta.y() - carta.offsetY()) / gradeY) * gradeY + 10 + carta.offsetY();
+
+                        carta.to({ x: xAlinhado, y: yAlinhado, duration: 0.1 });
+                        socket.emit('movimento_carta', { id: carta.id(), x: xAlinhado, y: yAlinhado });
+
+                        pilhaEmMovimento.forEach(c => {
+                            c.to({ x: xAlinhado, y: yAlinhado, duration: 0.1 });
+                            socket.emit('movimento_carta', { id: c.id(), x: xAlinhado, y: yAlinhado });
+                        });
+                    }
+                });
+
+                camada.add(carta);
+            };
+        }
+
+        const zoomElemento = document.getElementById('zoomCard');
+
+        window.addEventListener('keydown', (e) => {
+            // --- LÓGICA DO ZOOM (Tecla Z (Zoom)) ---
+            if (e.key.toLowerCase() === 'z' && cartaEmFoco) {
+                zoomElemento.src = cartaEmFoco.image().src;
+                zoomElemento.style.display = 'block';
+            }
+
+            // --- LÓGICA DE VIRAR FRENTE E VERSO (Tecla F (Flip)) ---
+            if (e.key.toLowerCase() === 'f' && cartaEmFoco) {
+                const novoEstado = !cartaEmFoco.getAttr('mostrandoFrente');
+
+                // Atualiza o estado e a imagem da carta em foco
+                cartaEmFoco.setAttr('mostrandoFrente', novoEstado);
+                cartaEmFoco.image(novoEstado ? cartaEmFoco.getAttr('imgFrente') : cartaEmFoco.getAttr('imgVerso'));
+
+                // Atualiza o zoom instantaneamente se estiver segurando o Z e apertar o C
+                if (zoomElemento.style.display === 'block') {
+                    zoomElemento.src = cartaEmFoco.image().src;
+                }
+
+                // Avisa o servidor (e os outros jogadores)
+                socket.emit('virar_carta_frente_verso', {
+                    id: cartaEmFoco.id(),
+                    mostrandoFrente: novoEstado
+                });
+            }
+
+            // --- LÓGICA DE EMBARALHAR (Tecla S (Shuffle)) ---
+            if (e.key.toLowerCase() === 's' && cartaEmFoco) {
+                const cartasNaMesa = camada.find('.carta');
+                const pilhaParaEmbaralhar = cartasNaMesa.filter(c =>
+                    c.x() === cartaEmFoco.x() &&
+                    c.y() === cartaEmFoco.y()
+                );
+
+                if (pilhaParaEmbaralhar.length > 1) {
+                    embaralharArray(pilhaParaEmbaralhar);
+
+                    const novaOrdemIds = [];
+
+                    pilhaParaEmbaralhar.forEach(c => {
+                        c.moveToTop();
+                        novaOrdemIds.push(c.id());
+
+                        c.to({
+                            rotation: (Math.random() - 0.5) * 10,
+                            duration: 0.1,
+                            onFinish: () => c.to({ rotation: 0, duration: 0.1 })
+                        });
+                    });
+
+                    socket.emit('embaralhar_pilha', {
+                        ids: novaOrdemIds
+                    });
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key.toLowerCase() === 'z') {
+                zoomElemento.style.display = 'none';
+            }
+        });
+
+        async function carregarBaralhos() {
+            try {
+                const resposta = await fetch('/api/cartas');
+                let listaDeCartas = await resposta.json();
+
+                let posXPilhaPorta = 10;
+                let posYPilhaPorta = 10;
+
+                let posXPilhaTesouro = 10 + gradeX;
+                let posYPilhaTesouro = 10;
+
+                listaDeCartas.forEach(carta => {
+                    if (carta.tipo === 'porta') {
+                        criarCarta(posXPilhaPorta, posYPilhaPorta, carta.frente, carta.verso, carta.id);
+                    }
+                    else if (carta.tipo === 'tesouro') {
+                        criarCarta(posXPilhaTesouro, posYPilhaTesouro, carta.frente, carta.verso, carta.id);
+                    }
+                });
+
+                console.log(`${listaDeCartas.length} cartas carregadas com sucesso!`);
+
+            } catch (erro) {
+                console.error("Erro ao carregar as cartas:", erro);
+            }
+        }
+
+        carregarBaralhos();
+    </script>
+</body>
+
+</html>
