@@ -5,6 +5,9 @@ Um simulador de mesa virtual leve e em tempo real, desenvolvido com Python (Flas
 
 📁 Estrutura de Pastas Necessária
 Antes de iniciar, certifique-se de que suas imagens (.png ou .jpg) estão organizadas exatamente nesta estrutura dentro da pasta do projeto:
+```
+MunchkinOnline/
+│
 ├── static/
 │   ├── cartas_porta/
 │   ├── cartas_tesouro/
@@ -13,7 +16,8 @@ Antes de iniciar, certifique-se de que suas imagens (.png ou .jpg) estão organi
 ├── templates/
 │   └── index.html
 │
-├── app.py
+└── app.py
+```
 
 ⚙️ 1. Configuração do Ambiente Local
 Para rodar o servidor na sua máquina, você precisará do Python instalado.
